@@ -56,6 +56,6 @@ func ByteToKb(b uint64) string {
 func ShowMem() {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	fmt.Printf("Alloc = %s; TotalAlloc = %s; Sys = %s;\n",
-		ByteToKb(m.Alloc), ByteToKb(m.TotalAlloc), ByteToKb(m.Sys))
+	fmt.Printf("[Pid:%d]Alloc = %s; TotalAlloc = %s; Sys = %s;\n",
+		os.Getpid(), ByteToKb(m.Alloc), ByteToKb(m.TotalAlloc), ByteToKb(m.Sys))
 }
