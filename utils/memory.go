@@ -27,10 +27,10 @@ func AsyncAllocBuffer(bufferSize int, timegap time.Duration, showMem bool) {
 	}()
 }
 
-func GetProcessMemoryUsage(pid int) (rss, vsz int64, err error) {
+func GetProcessMemoryUsage(pid int) (rss, vsz, shm int64, err error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", pid))
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	// default 4KB
 	var pageSize int64 = int64(os.Getpagesize())
@@ -41,7 +41,8 @@ func GetProcessMemoryUsage(pid int) (rss, vsz int64, err error) {
 	}
 	rss = fields[1] * pageSize
 	vsz = fields[0] * pageSize
-	return rss, vsz, nil
+	shm = fields[2] * pageSize
+	return rss, vsz, shm, nil
 }
 
 func ByteToMb(b uint64) string {
