@@ -15,9 +15,42 @@ var mode int64
 
 var hosts []*PluginHost
 
+// start child process
+func RegisterSIGUSR1() error {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGUSR1)
+	go func() {
+		for {
+			<-sigs
+			host, err := BornAChild()
+			if err == nil {
+				hosts = append(hosts, host)
+			}
+		}
+	}()
+	return nil
+}
+
+// kill child process
+func RegisterSIGUSR2() error {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGUSR2)
+	go func() {
+		for {
+			<-sigs
+			deleteHost := hosts[0]
+			hosts = hosts[1:]
+			deleteHost.LogFile.WriteString(fmt.Sprintf("【Agent】:I'm going to dead, kill the child process[%d]\n", deleteHost.ExecCmd.Process.Pid))
+			deleteHost.LogFile.Close()
+			deleteHost.ExecCmd.Process.Kill()
+		}
+	}()
+	return nil
+}
+
 func main() {
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		// 等待信号
 		<-sigChan
@@ -32,42 +65,37 @@ func main() {
 	host, err := BornAChild()
 	if err == nil {
 		hosts = append(hosts, host)
-		WatchChild(host)
 	}
+	WatchChilds(hosts)
 
 	//fmt.Println("Total:", v.Total, " Free:", v.Free, " Used:", v.Used, " UsedPercent:", v.UsedPercent)
 	//BornAChild()
 }
 
 type PluginHost struct {
-	ExecCmd *exec.Cmd
-	LogFile *os.File
+	ExecCmd         *exec.Cmd
+	LogFile         *os.File
+	childExitSignal chan bool
 }
 
-func WatchChild(childHost *PluginHost) {
-	fmt.Println(fmt.Sprintf("Let me wait for the child[%d] to finish", childHost.ExecCmd.Process.Pid))
-	c := make(chan bool, 1)
-	// 等待子进程完成
-	/*
-		go func() {
-			err := childHost.ExecCmd.Wait()
-			if err != nil {
-				fmt.Println("Error waiting for child process:", err)
-			}
-			c <- true
-		}()
-	*/
-
-	defer childHost.LogFile.WriteString(fmt.Sprintf("【Agent】:Child[%d] has finished\n", childHost.ExecCmd.Process.Pid))
+func WatchChilds(hosts []*PluginHost) {
 	for {
 		select {
-		case <-c:
-			return
 		case <-time.After(3 * time.Second):
-			rss, vsz, shm, err := utils.GetProcessMemoryUsage(childHost.ExecCmd.Process.Pid)
-			if err == nil {
-				childHost.LogFile.WriteString(fmt.Sprintf("【Agent】：Child[%d] RSS:%s VSZ:%s SHM:%s\n",
-					childHost.ExecCmd.Process.Pid, utils.ByteToKb(uint64(rss)), utils.ByteToKb(uint64(vsz)), utils.ByteToKb(uint64(shm))))
+			for _, childHost := range hosts {
+				rss, vsz, shm, err := utils.GetProcessMemoryUsage(childHost.ExecCmd.Process.Pid)
+				if err == nil {
+					childHost.LogFile.WriteString(fmt.Sprintf("【Agent】：Child[%d] RSS:%s VSZ:%s SHM:%s\n",
+						childHost.ExecCmd.Process.Pid, utils.ByteToKb(uint64(rss)), utils.ByteToKb(uint64(vsz)), utils.ByteToKb(uint64(shm))))
+				}
+			}
+		default:
+			for _, childHost := range hosts {
+				select {
+				case <-childHost.childExitSignal:
+					childHost.LogFile.WriteString(fmt.Sprintf("【Agent】:Child[%d] has finished\n", childHost.ExecCmd.Process.Pid))
+				default:
+				}
 			}
 		}
 	}
@@ -103,7 +131,16 @@ func BornAChild() (*PluginHost, error) {
 		fmt.Println("Failed to start child process:", err)
 		return nil, err
 	}
+	c := make(chan bool, 1)
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			fmt.Println("Error waiting for child process:", err)
+		}
+		c <- true
+	}()
 	host.ExecCmd = cmd
 	host.LogFile = f
+	host.childExitSignal = c
 	return host, nil
 }
