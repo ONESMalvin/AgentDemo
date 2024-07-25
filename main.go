@@ -20,77 +20,100 @@ var hosts []*PluginHost
 var mutex sync.Mutex
 
 func main() {
-	log.Printf("My pid: %d", os.Getpid())
+	log.Printf("Agent pid: %d", os.Getpid())
+	hosts = make([]*PluginHost, 0)
+	WatchChilds()
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR2, syscall.SIGUSR1)
-	go func() {
-		// 等待信号
-		for {
-			select {
-			case s := <-sigChan:
-				if s == syscall.SIGINT || s == syscall.SIGTERM {
-					for _, host := range hosts {
-						host.LogFile.WriteString(fmt.Sprintf("【Agent】:I'm going to dead, kill the child process[%d]\n", host.ExecCmd.Process.Pid))
-						host.LogFile.Close()
-						host.ExecCmd.Process.Kill()
+	// 等待信号
+	for {
+		select {
+		case s := <-sigChan:
+			if s == syscall.SIGINT || s == syscall.SIGTERM {
+				return
+			} else if s == syscall.SIGUSR2 {
+				for _, host := range hosts {
+					if host.Available {
+						host.KillHost()
+						break
 					}
-					os.Exit(0)
-				} else if s == syscall.SIGUSR2 {
-					if len(hosts) <= 0 {
-						continue
-					}
-					deleteHost := hosts[0]
-					hosts = hosts[1:]
-					deleteHost.LogFile.WriteString(fmt.Sprintf("【Agent】:I'm going to dead, kill the child process[%d]\n", deleteHost.ExecCmd.Process.Pid))
-					deleteHost.LogFile.Close()
-					deleteHost.ExecCmd.Process.Kill()
-				} else if s == syscall.SIGUSR1 {
-					host, err := BornAChild()
-					if err == nil {
-						hosts = append(hosts, host)
-					}
+				}
+			} else if s == syscall.SIGUSR1 {
+				host, err := BornAChild()
+				if err == nil {
+					hosts = append(hosts, host)
 				}
 			}
 		}
-	}()
-	hosts = make([]*PluginHost, 0)
-	host, err := BornAChild()
-	if err == nil {
-		hosts = append(hosts, host)
 	}
-	WatchChilds()
-
-	//fmt.Println("Total:", v.Total, " Free:", v.Free, " Used:", v.Used, " UsedPercent:", v.UsedPercent)
-	//BornAChild()
 }
 
 type PluginHost struct {
 	ExecCmd         *exec.Cmd
 	LogFile         *os.File
 	childExitSignal chan bool
+	Available       bool
+}
+
+func (p *PluginHost) KillHost() {
+	if p.Available == false {
+		return
+	}
+	p.LogFile.WriteString(fmt.Sprintf("【Agent】:I'm going to dead, kill the child process[%d]\n", p.ExecCmd.Process.Pid))
+	if p.ExecCmd == nil || p.ExecCmd.Process == nil {
+		log.Println("No process to kill")
+		return
+	}
+	err := p.ExecCmd.Process.Signal(syscall.SIGTERM)
+	if err != nil {
+		log.Printf("Error killing process: %v", err)
+		return
+	}
+	p.ExecCmd.WaitDelay = 3 * time.Second
+	p.ExecCmd.Cancel = func() error {
+		p.ExecCmd.Process.Kill()
+		p.LogFile.WriteString(fmt.Sprintf("【Agent】child process must die[%d]\n", p.ExecCmd.Process.Pid))
+		return nil
+	}
+	err = p.ExecCmd.Wait()
+	if err != nil {
+		log.Printf("Error waiting for process to exit: %v", err)
+	} else {
+		log.Printf("Process with PID %d exited successfully", p.ExecCmd.Process.Pid)
+	}
+	p.Available = false
 }
 
 func WatchChilds() {
-	for {
-		select {
-		case <-time.After(3 * time.Second):
-			for _, childHost := range hosts {
-				rss, vsz, shm, err := utils.GetProcessMemoryUsage(childHost.ExecCmd.Process.Pid)
-				if err == nil {
-					childHost.LogFile.WriteString(fmt.Sprintf("【Agent】：Child[%d] RSS:%s VSZ:%s SHM:%s\n",
-						childHost.ExecCmd.Process.Pid, utils.ByteToKb(uint64(rss)), utils.ByteToKb(uint64(vsz)), utils.ByteToKb(uint64(shm))))
-				}
+	go func() {
+		for _, childHost := range hosts {
+			select {
+			case <-childHost.childExitSignal:
+				childHost.LogFile.WriteString(fmt.Sprintf("【Agent】:Child[%d] has finished\n", childHost.ExecCmd.Process.Pid))
+				childHost.Available = false
+			default:
 			}
-		default:
-			for _, childHost := range hosts {
-				select {
-				case <-childHost.childExitSignal:
-					childHost.LogFile.WriteString(fmt.Sprintf("【Agent】:Child[%d] has finished\n", childHost.ExecCmd.Process.Pid))
-				default:
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-time.After(3 * time.Second):
+				for _, childHost := range hosts {
+					if !childHost.Available {
+						continue
+					}
+					rss, vsz, shm, err := utils.GetProcessMemoryUsage(childHost.ExecCmd.Process.Pid)
+					if err == nil {
+						childHost.LogFile.WriteString(fmt.Sprintf("【Agent】：Child[%d] RSS:%s VSZ:%s SHM:%s\n",
+							childHost.ExecCmd.Process.Pid, utils.ByteToKb(uint64(rss)), utils.ByteToKb(uint64(vsz)), utils.ByteToKb(uint64(shm))))
+					}
 				}
 			}
 		}
-	}
+	}()
 }
 
 func BornAChild() (*PluginHost, error) {
@@ -100,9 +123,11 @@ func BornAChild() (*PluginHost, error) {
 		fmt.Println(err.Error())
 	}
 	cmd := exec.Command("child/child")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGHUP}
+	// kill child process when parent process dead
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	// close stdin
 	cmd.Stdin = nil
-	//cmd.Stdout = os.Stdout
+	// redirect Stdout & Stderr
 	cmd.Stdout = f
 	cmd.Stderr = f
 	/*
@@ -133,5 +158,6 @@ func BornAChild() (*PluginHost, error) {
 	}()
 	host.ExecCmd = cmd
 	host.LogFile = f
+	host.Available = true
 	return host, nil
 }
