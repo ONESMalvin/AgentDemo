@@ -12,7 +12,7 @@ import (
 
 // AsyncAllocBuffer(2 * 1024, 3 * time.Second, true)
 func AsyncAllocBuffer(bufferSize int, timegap time.Duration, showMem bool) {
-	fmt.Printf("I'm going to allocate memory asynchronously:%s per %s\n", ByteToKb(uint64(bufferSize)), timegap)
+	fmt.Printf("【Child】[Pid:%d]I'm going to allocate memory asynchronously:%s per %s\n", os.Getpid(), ByteToKb(uint64(bufferSize)), timegap)
 	go func() {
 		buf := bytes.Repeat([]byte("1"), bufferSize)
 		for {
@@ -56,6 +56,6 @@ func ByteToKb(b uint64) string {
 func ShowMem() {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	fmt.Printf("[Pid:%d]Alloc = %s; TotalAlloc = %s; Sys = %s;\n",
+	fmt.Printf("【Child】[Pid:%d]Alloc = %s; TotalAlloc = %s; Sys = %s;\n",
 		os.Getpid(), ByteToKb(m.Alloc), ByteToKb(m.TotalAlloc), ByteToKb(m.Sys))
 }
