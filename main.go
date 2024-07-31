@@ -55,6 +55,8 @@ func WatchChilds() {
 				select {
 				case <-childHost.childExit:
 					childHost.LogFile.WriteString(fmt.Sprintf("【Agent】:Child[%d] has finished\n", childHost.ExecCmd.Process.Pid))
+					childHost.TerminateHost()
+					childHost.CleanUp()
 				default:
 				}
 			}
